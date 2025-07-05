@@ -165,6 +165,7 @@ def extract_foodbank_links_from_directory(html_content, base_url):
         except Exception as e:
             print(f" GPT link extraction failed: {e}")
     
+    
     # Method 5: Extract organization names and try to find their websites
     if not links:
         try:

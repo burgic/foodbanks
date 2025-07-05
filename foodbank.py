@@ -15,6 +15,21 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 client = openai.Client(api_key=OPENAI_API_KEY)
 
+# Regex patterns for extracting contact information
+EMAIL_PATTERN = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+PHONE_PATTERN = r'(?:\+44|0)\s*(?:1|2|3|7|8|9)\d{1,4}\s*\d{3,4}\s*\d{3,4}'
+POSTCODE_PATTERN = r'\b[A-Z]{1,2}[0-9][A-Z0-9]?\s*[0-9][A-Z]{2}\b'
+UK_ADDRESS_PATTERN = r'\b\d+\s+[A-Za-z\s]+(?:Street|Road|Avenue|Lane|Drive|Close|Way|Place|Court|Crescent|Terrace|Grove|Hill|Park|Square|Mews|Gardens?|Walk|Bridge|Quay|Wharf|Yard|Alley|Arcade|Boulevard|Circle|Commons?|Cross|End|Fields?|Gate|Green|Heath|Highway|Island|Junction|Mall|Market|Meadows?|Mount|Parade|Passage|Path|Piazza|Plaza|Promenade|Rise|Row|Rue|Run|Service|Services|Side|Slip|Spur|Strand|Subway|Thicket|Towers?|Track|Trail|Vale|Viaduct|Villas?|Vista|Walk|Wharf|Wood|Wynd)\b'
+OPENING_HOURS_PATTERNS = [
+    r'(?:Monday|Mon|M)\s*:?\s*(?:(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?)|(?:closed|Closed|CLOSED))',
+    r'(?:Tuesday|Tue|T)\s*:?\s*(?:(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?)|(?:closed|Closed|CLOSED))',
+    r'(?:Wednesday|Wed|W)\s*:?\s*(?:(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?)|(?:closed|Closed|CLOSED))',
+    r'(?:Thursday|Thu|Th)\s*:?\s*(?:(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?)|(?:closed|Closed|CLOSED))',
+    r'(?:Friday|Fri|F)\s*:?\s*(?:(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?)|(?:closed|Closed|CLOSED))',
+    r'(?:Saturday|Sat|Sa)\s*:?\s*(?:(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?)|(?:closed|Closed|CLOSED))',
+    r'(?:Sunday|Sun|Su)\s*:?\s*(?:(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?)|(?:closed|Closed|CLOSED))'
+]
+
 SEARCH_LOCATIONS = [
     "Manchester UK", 
     #"Birmingham UK",
@@ -54,6 +69,45 @@ def extract_main_content(url):
     except Exception as e:
         return f"Error fetching page: {e}"
     
+def extract_contact_info(text):
+    """
+    Extract contact information from text using regex patterns
+    """
+    info = {}
+    
+    # Extract email addresses
+    emails = re.findall(EMAIL_PATTERN, text)
+    if emails:
+        info["Email"] = emails[0]  # Take the first email found
+    
+    # Extract phone numbers
+    phones = re.findall(PHONE_PATTERN, text)
+    if phones:
+        info["Phone"] = phones[0]  # Take the first phone number found
+    
+    # Extract postcodes
+    postcodes = re.findall(POSTCODE_PATTERN, text)
+    if postcodes:
+        info["Postcode"] = postcodes[0]  # Take the first postcode found
+    
+    # Extract UK addresses
+    addresses = re.findall(UK_ADDRESS_PATTERN, text)
+    if addresses:
+        info["Address"] = addresses[0]  # Take the first address found
+    
+    # Extract opening hours
+    opening_hours = []
+    for pattern in OPENING_HOURS_PATTERNS:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        for match in matches:
+            if match:  # If there's a time match (not empty)
+                opening_hours.append(match)
+    
+    if opening_hours:
+        info["Opening Hours"] = ", ".join(opening_hours)
+    
+    return info
+
 def safe_json_extract(text):
     try:
         match = re.search(r"\{[\s\S]+?\}", text)
@@ -78,11 +132,18 @@ def classify_page(text):
     Uses GPT to classify whether the page is a single foodbank, a directory, or other.
     """
     prompt = (
+        "You are a helpful, very diligent research assistant that classifies webpages as 'single' (about a specific food bank or pantry), 'directory' (a list, directory, guide, review site, or ranking of multiple food banks), or 'other' (not related to food banks).\n\n"
         "Classify this webpage content as:\n"
         "- 'single': about a specific food bank or pantry (even if it's a social media page, listing, or get-help page)\n"
-        "- 'directory': a list, directory, or guide of multiple food banks (even if it's just a few)\n"
+        "- 'directory': a list, directory, guide, review site, or ranking of multiple food banks (even if it's just a few)\n"
         "- 'other': not related to food banks\n\n"
-        "Be generous with 'directory' classification - if it mentions multiple food banks, lists services, or is a guide/resource page, classify as directory.\n"
+        "Be VERY generous with 'directory' classification:\n"
+        "- If it mentions multiple food banks, classify as directory\n"
+        "- If it's a review site (like Yelp), classify as directory\n"
+        "- If it's a ranking or 'best of' list, classify as directory\n"
+        "- If it lists services or resources, classify as directory\n"
+        "- If it's a guide or resource page, classify as directory\n"
+        "- If the title mentions 'food banks' (plural), likely directory\n\n"
         "Be generous with 'single' classification - if it mentions a food bank name, service, or has 'get-help' in URL, classify as single.\n"
         "Pages with 'get-help', 'find-a-foodbank', or specific food bank names should be 'single'.\n"
         "Only return: single, directory, or other\n\n"
@@ -210,6 +271,7 @@ def extract_foodbank_links_from_directory(html_content, base_url):
 def gpt_parse_foodbank(text):
     try:
         prompt = (
+            "You are a helpful, very diligent research assistant that extracts structured data about a UK food bank from the provided website text. "
             "Extract structured data about a UK food bank from the provided website text. "
             "Return ONLY a single JSON object with the following fields: "
             "Name, Address, Postcode, Phone, Email, Opening Hours, Website, Any special requirements. "
@@ -224,9 +286,30 @@ def gpt_parse_foodbank(text):
             max_tokens=600
         )
         content = response.choices[0].message.content
-        return safe_json_extract(content)
+        gpt_result = safe_json_extract(content)
+        
+        # If GPT parsing failed or returned incomplete data, try regex extraction
+        if "error" in gpt_result or gpt_result.get("Name") is None:
+            print("  GPT parsing failed or incomplete, trying regex extraction...")
+            regex_info = extract_contact_info(text)
+            
+            # Merge regex results with GPT results
+            if "error" not in gpt_result:
+                # Merge regex findings into GPT result
+                for key, value in regex_info.items():
+                    if gpt_result.get(key) is None and value:
+                        gpt_result[key] = value
+                        print(f"    Found {key}: {value}")
+            else:
+                # Use regex results as fallback
+                gpt_result = regex_info
+                print(f"    Using regex extraction as fallback")
+        
+        return gpt_result
     except Exception as e:
-        return {"error": str(e)}
+        # If GPT completely fails, try regex extraction
+        print(f"  GPT parsing failed: {e}, trying regex extraction...")
+        return extract_contact_info(text)
     
 def domain_from_url(url):
     ext = tldextract.extract(url)
@@ -271,8 +354,15 @@ for location in SEARCH_LOCATIONS:
             if main_text.startswith("Error"):
                 structured = {"error": main_text}
             else:
-                classification = classify_page(main_text)
-                print(f"  Classified as: {classification}")
+                # Check URL for obvious directory indicators
+                url_lower = url.lower()
+                if any(term in url_lower for term in ['yelp', 'search', 'list', 'directory', 'find', 'best', 'top', 'review']):
+                    classification = "directory"
+                    print(f"  Classified as: directory (URL indicator)")
+                else:
+                    classification = classify_page(main_text)
+                    print(f"  Classified as: {classification}")
+                
                 if classification == "directory":
                     # Extract individual links and process them
                     print(f" Directory page: extracting links from {url}")
